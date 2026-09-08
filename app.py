@@ -7,8 +7,11 @@ from flask import (
     request,
     jsonify,
     render_template_string,
-    session
+    session,
+    send_file
 )
+
+from io import BytesIO
 
 
 app = Flask(__name__)
@@ -18,9 +21,23 @@ app = Flask(__name__)
 # CONFIG
 # ============================================================
 
-RELAY_KEY = os.environ.get("RELAY_KEY", "")
-PANEL_PASSWORD = os.environ.get("PANEL_PASSWORD", "")
-PORT = int(os.environ.get("PORT", "10000"))
+RELAY_KEY = os.environ.get(
+    "RELAY_KEY",
+    ""
+)
+
+PANEL_PASSWORD = os.environ.get(
+    "PANEL_PASSWORD",
+    ""
+)
+
+PORT = int(
+    os.environ.get(
+        "PORT",
+        "10000"
+    )
+)
+
 
 app.secret_key = os.environ.get(
     "PANEL_PASSWORD",
@@ -36,8 +53,13 @@ pending_commands = []
 
 available_apps = []
 
+screenshot_results = {}
+
 lock = threading.Lock()
+
 apps_lock = threading.Lock()
+
+screenshots_lock = threading.Lock()
 
 
 # ============================================================
@@ -45,18 +67,27 @@ apps_lock = threading.Lock()
 # ============================================================
 
 def relay_authorized():
+
     return (
         bool(RELAY_KEY)
-        and request.headers.get("X-Relay-Key") == RELAY_KEY
+        and
+        request.headers.get(
+            "X-Relay-Key"
+        ) == RELAY_KEY
     )
 
 
 # ============================================================
-# PHONE PANEL SECURITY
+# PANEL SECURITY
 # ============================================================
 
 def panel_logged_in():
-    return session.get("panel_logged_in") is True
+
+    return (
+        session.get(
+            "panel_logged_in"
+        ) is True
+    )
 
 
 # ============================================================
@@ -66,6 +97,7 @@ def panel_logged_in():
 def get_app_icon(name):
 
     name_lower = name.lower()
+
 
     if "whatsapp" in name_lower:
         return "💬"
@@ -149,7 +181,7 @@ def get_app_icon(name):
 
 
 # ============================================================
-# PHONE PANEL HTML
+# PHONE PANEL
 # ============================================================
 
 PANEL_HTML = """
@@ -253,6 +285,15 @@ PANEL_HTML = """
         }
 
 
+        .screenshot-button {
+
+            background: #252525;
+
+            border: 1px solid #444;
+
+        }
+
+
         .app-button {
 
             display: flex;
@@ -305,6 +346,30 @@ PANEL_HTML = """
             text-align: center;
 
             word-break: break-word;
+
+        }
+
+
+        #screenshot-preview {
+
+            margin-top: 15px;
+
+        }
+
+
+        #screenshot-preview img {
+
+            width: 100%;
+
+            max-width: 100%;
+
+            height: auto;
+
+            border-radius: 12px;
+
+            border: 1px solid #444;
+
+            display: block;
 
         }
 
@@ -405,6 +470,14 @@ PANEL_HTML = """
     </button>
 
 
+    <button class="screenshot-button"
+            onclick="takeScreenshot()">
+
+        📸 Screenshot
+
+    </button>
+
+
     <button class="quick-button"
             onclick="sendCommand('lock')">
 
@@ -451,6 +524,11 @@ PANEL_HTML = """
         📁 Explorer
 
     </button>
+
+
+    <!-- SCREENSHOT RESULT -->
+
+    <div id="screenshot-preview"></div>
 
 
     <!-- INSTALLED APPS -->
@@ -527,7 +605,7 @@ function showResult(message) {
 
 
 // ============================================================
-// SEND QUICK COMMAND
+// SEND NORMAL COMMAND
 // ============================================================
 
 async function sendCommand(command) {
@@ -558,14 +636,18 @@ async function sendCommand(command) {
         );
 
 
-        const data = await response.json();
+        const data =
+            await response.json();
 
 
         if (!response.ok) {
 
             showResult(
                 "❌ " +
-                (data.error || "Command failed")
+                (
+                    data.error ||
+                    "Command failed"
+                )
             );
 
             return;
@@ -574,7 +656,10 @@ async function sendCommand(command) {
 
         showResult(
             "✅ " +
-            (data.status || "Command queued")
+            (
+                data.status ||
+                "Command queued"
+            )
         );
 
 
@@ -585,6 +670,208 @@ async function sendCommand(command) {
         );
 
     }
+
+}
+
+
+// ============================================================
+// SCREENSHOT
+// ============================================================
+
+async function takeScreenshot() {
+
+    showResult(
+        "📸 Requesting laptop screenshot..."
+    );
+
+
+    document.getElementById(
+        "screenshot-preview"
+    ).innerHTML = "";
+
+
+    try {
+
+        const response = await fetch(
+            "/panel/command",
+            {
+
+                method: "POST",
+
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+
+                body: JSON.stringify({
+                    command:
+                        "screenshot"
+                })
+
+            }
+        );
+
+
+        const data =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            showResult(
+                "❌ " +
+                (
+                    data.error ||
+                    "Screenshot request failed"
+                )
+            );
+
+            return;
+        }
+
+
+        const commandId =
+            data.command_id;
+
+
+        if (!commandId) {
+
+            showResult(
+                "❌ Screenshot ID missing"
+            );
+
+            return;
+        }
+
+
+        showResult(
+            "⏳ Capturing screenshot..."
+        );
+
+
+        await waitForScreenshot(
+            commandId
+        );
+
+
+    } catch (error) {
+
+        showResult(
+            "❌ Connection error"
+        );
+
+    }
+
+}
+
+
+// ============================================================
+// WAIT FOR SCREENSHOT
+// ============================================================
+
+async function waitForScreenshot(
+    commandId
+) {
+
+    const maxAttempts = 30;
+
+    const delay = 1000;
+
+
+    for (
+        let attempt = 0;
+        attempt < maxAttempts;
+        attempt++
+    ) {
+
+        try {
+
+            const response =
+                await fetch(
+                    "/panel/screenshot/" +
+                    encodeURIComponent(
+                        commandId
+                    )
+                );
+
+
+            if (response.ok) {
+
+                const blob =
+                    await response.blob();
+
+
+                const imageUrl =
+                    URL.createObjectURL(
+                        blob
+                    );
+
+
+                document.getElementById(
+                    "screenshot-preview"
+                ).innerHTML =
+
+                    '<img src="' +
+                    imageUrl +
+                    '" alt="Laptop Screenshot">';
+
+
+                showResult(
+                    "✅ Screenshot received"
+                );
+
+                return;
+            }
+
+
+            if (
+                response.status !== 202
+            ) {
+
+                let data = {};
+
+                try {
+                    data =
+                        await response.json();
+                } catch (e) {}
+
+
+                showResult(
+                    "❌ " +
+                    (
+                        data.error ||
+                        "Screenshot unavailable"
+                    )
+                );
+
+                return;
+            }
+
+
+        } catch (error) {
+
+            showResult(
+                "❌ Connection error"
+            );
+
+            return;
+        }
+
+
+        await new Promise(
+            resolve =>
+                setTimeout(
+                    resolve,
+                    delay
+                )
+        );
+
+    }
+
+
+    showResult(
+        "❌ Screenshot timed out"
+    );
 
 }
 
@@ -607,37 +894,44 @@ async function openDiscoveredApp(
 
     try {
 
-        const response = await fetch(
-            "/panel/command",
-            {
+        const response =
+            await fetch(
+                "/panel/command",
+                {
 
-                method: "POST",
+                    method: "POST",
 
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
 
-                body: JSON.stringify({
+                    body: JSON.stringify({
 
-                    command: "open_app",
+                        command:
+                            "open_app",
 
-                    app_id: appId
+                        app_id:
+                            appId
 
-                })
+                    })
 
-            }
-        );
+                }
+            );
 
 
-        const data = await response.json();
+        const data =
+            await response.json();
 
 
         if (!response.ok) {
 
             showResult(
                 "❌ " +
-                (data.error || "Could not open app")
+                (
+                    data.error ||
+                    "Could not open app"
+                )
             );
 
             return;
@@ -692,9 +986,10 @@ async function loadApps() {
 
     try {
 
-        const response = await fetch(
-            "/panel/apps"
-        );
+        const response =
+            await fetch(
+                "/panel/apps"
+            );
 
 
         const data =
@@ -774,7 +1069,8 @@ async function loadApps() {
                 "app-icon";
 
             icon.innerText =
-                app.icon || "📱";
+                app.icon ||
+                "📱";
 
 
             const name =
@@ -789,22 +1085,29 @@ async function loadApps() {
                 app.name;
 
 
-            button.appendChild(icon);
+            button.appendChild(
+                icon
+            );
 
-            button.appendChild(name);
-
-
-            button.onclick = function() {
-
-                openDiscoveredApp(
-                    app.id,
-                    app.name
-                );
-
-            };
+            button.appendChild(
+                name
+            );
 
 
-            list.appendChild(button);
+            button.onclick =
+                function() {
+
+                    openDiscoveredApp(
+                        app.id,
+                        app.name
+                    );
+
+                };
+
+
+            list.appendChild(
+                button
+            );
 
         }
 
@@ -850,7 +1153,7 @@ async function logout() {
 
 
 // ============================================================
-// LOAD APPS WHEN PAGE OPENS
+// LOAD APPS
 // ============================================================
 
 loadApps();
@@ -1068,7 +1371,10 @@ def login():
         and password == PANEL_PASSWORD
     ):
 
-        session["panel_logged_in"] = True
+        session[
+            "panel_logged_in"
+        ] = True
+
 
         return render_template_string(
             PANEL_HTML
@@ -1090,8 +1396,10 @@ def logout():
 
     session.clear()
 
+
     return jsonify({
-        "status": "logged out"
+        "status":
+            "logged out"
     })
 
 
@@ -1105,41 +1413,52 @@ def panel_apps():
     if not panel_logged_in():
 
         return jsonify({
-            "error": "Login required"
+            "error":
+                "Login required"
         }), 401
 
 
     with apps_lock:
 
         apps = [
+
             {
-                "id": app["id"],
-                "name": app["name"],
-                "icon": get_app_icon(
-                    app["name"]
-                )
+                "id":
+                    app["id"],
+
+                "name":
+                    app["name"],
+
+                "icon":
+                    get_app_icon(
+                        app["name"]
+                    )
+
             }
 
             for app in available_apps
         ]
 
 
-    # Sort alphabetically.
-
     apps.sort(
         key=lambda item:
-        item["name"].lower()
+            item["name"].lower()
     )
 
 
     return jsonify({
-        "apps": apps,
-        "count": len(apps)
+
+        "apps":
+            apps,
+
+        "count":
+            len(apps)
+
     })
 
 
 # ============================================================
-# REGISTER APPS FROM LAPTOP AGENT
+# REGISTER APPS
 # ============================================================
 
 @app.post("/register_apps")
@@ -1148,7 +1467,8 @@ def register_apps():
     if not relay_authorized():
 
         return jsonify({
-            "error": "Unauthorized"
+            "error":
+                "Unauthorized"
         }), 401
 
 
@@ -1157,10 +1477,11 @@ def register_apps():
     ) or {}
 
 
-    incoming_apps = data.get(
-        "apps",
-        []
-    )
+    incoming_apps =
+        data.get(
+            "apps",
+            []
+        )
 
 
     if not isinstance(
@@ -1169,7 +1490,8 @@ def register_apps():
     ):
 
         return jsonify({
-            "error": "Invalid apps data"
+            "error":
+                "Invalid apps data"
         }), 400
 
 
@@ -1186,50 +1508,52 @@ def register_apps():
 
 
         app_id = str(
-            item.get("id", "")
+            item.get(
+                "id",
+                ""
+            )
         ).strip()
 
 
         app_name = str(
-            item.get("name", "")
+            item.get(
+                "name",
+                ""
+            )
         ).strip()
 
 
         if not app_id or not app_name:
-
             continue
 
-
-        # Keep IDs reasonably bounded.
 
         if len(app_id) > 100:
-
             continue
 
 
-        # Keep names reasonably bounded.
-
         if len(app_name) > 300:
-
             continue
 
 
         clean_apps.append({
 
-            "id": app_id,
+            "id":
+                app_id,
 
-            "name": app_name
+            "name":
+                app_name
 
         })
 
 
-    # Remove duplicate IDs.
-
     unique_apps = {}
+
 
     for item in clean_apps:
 
-        unique_apps[item["id"]] = item
+        unique_apps[
+            item["id"]
+        ] = item
 
 
     with apps_lock:
@@ -1249,9 +1573,11 @@ def register_apps():
 
     return jsonify({
 
-        "status": "Apps registered",
+        "status":
+            "Apps registered",
 
-        "count": len(unique_apps)
+        "count":
+            len(unique_apps)
 
     })
 
@@ -1266,7 +1592,8 @@ def panel_command():
     if not panel_logged_in():
 
         return jsonify({
-            "error": "Login required"
+            "error":
+                "Login required"
         }), 401
 
 
@@ -1276,13 +1603,18 @@ def panel_command():
 
 
     command = str(
-        data.get("command", "")
+        data.get(
+            "command",
+            ""
+        )
     ).strip().lower()
 
 
     allowed = {
 
         "status",
+
+        "screenshot",
 
         "lock",
 
@@ -1304,19 +1636,46 @@ def panel_command():
     if command not in allowed:
 
         return jsonify({
-            "error": "Command not allowed"
+            "error":
+                "Command not allowed"
         }), 400
+
+
+    command_id = str(
+        time.time_ns()
+    )
 
 
     command_item = {
 
-        "id": str(
-            time.time_ns()
-        ),
+        "id":
+            command_id,
 
-        "command": command
+        "command":
+            command
 
     }
+
+
+    # ========================================================
+    # SCREENSHOT
+    # ========================================================
+
+    if command == "screenshot":
+
+        with screenshots_lock:
+
+            screenshot_results[
+                command_id
+            ] = {
+
+                "status":
+                    "pending",
+
+                "created_at":
+                    time.time()
+
+            }
 
 
     # ========================================================
@@ -1326,19 +1685,20 @@ def panel_command():
     if command == "open_app":
 
         app_id = str(
-            data.get("app_id", "")
+            data.get(
+                "app_id",
+                ""
+            )
         ).strip()
 
 
         if not app_id:
 
             return jsonify({
-                "error": "App ID required"
+                "error":
+                    "App ID required"
             }), 400
 
-
-        # Only queue an ID that the laptop
-        # previously registered.
 
         with apps_lock:
 
@@ -1359,7 +1719,9 @@ def panel_command():
             }), 400
 
 
-        command_item["app_id"] = app_id
+        command_item[
+            "app_id"
+        ] = app_id
 
 
     # ========================================================
@@ -1373,13 +1735,211 @@ def panel_command():
         )
 
 
+    if command == "screenshot":
+
+        return jsonify({
+
+            "status":
+                "Screenshot queued",
+
+            "command_id":
+                command_id
+
+        })
+
+
     return jsonify({
 
-        "status": "queued",
+        "status":
+            "queued",
 
-        "command": command
+        "command":
+            command
 
     })
+
+
+# ============================================================
+# UPLOAD SCREENSHOT FROM LAPTOP
+# ============================================================
+
+@app.post("/upload_screenshot")
+def upload_screenshot():
+
+    if not relay_authorized():
+
+        return jsonify({
+            "error":
+                "Unauthorized"
+        }), 401
+
+
+    screenshot_id = request.headers.get(
+        "X-Screenshot-ID",
+        ""
+    ).strip()
+
+
+    if not screenshot_id:
+
+        return jsonify({
+            "error":
+                "Screenshot ID missing"
+        }), 400
+
+
+    image_data = request.get_data()
+
+
+    if not image_data:
+
+        return jsonify({
+            "error":
+                "Empty screenshot"
+        }), 400
+
+
+    # Keep screenshot size bounded.
+
+    if len(image_data) > 15 * 1024 * 1024:
+
+        return jsonify({
+            "error":
+                "Screenshot too large"
+        }), 413
+
+
+    with screenshots_lock:
+
+        screenshot_results[
+            screenshot_id
+        ] = {
+
+            "status":
+                "ready",
+
+            "data":
+                image_data,
+
+            "created_at":
+                time.time()
+
+        }
+
+
+    return jsonify({
+        "status":
+            "Screenshot received"
+    })
+
+
+# ============================================================
+# GET SCREENSHOT FOR PHONE
+# ============================================================
+
+@app.get(
+    "/panel/screenshot/<screenshot_id>"
+)
+def get_screenshot(screenshot_id):
+
+    if not panel_logged_in():
+
+        return jsonify({
+            "error":
+                "Login required"
+        }), 401
+
+
+    screenshot_id = str(
+        screenshot_id
+    ).strip()
+
+
+    with screenshots_lock:
+
+        result = screenshot_results.get(
+            screenshot_id
+        )
+
+
+    if not result:
+
+        return jsonify({
+            "error":
+                "Screenshot not found"
+        }), 404
+
+
+    if result["status"] == "pending":
+
+        return jsonify({
+            "status":
+                "pending"
+        }), 202
+
+
+    image_data = result.get(
+        "data"
+    )
+
+
+    if not image_data:
+
+        return jsonify({
+            "error":
+                "Screenshot data missing"
+        }), 500
+
+
+    return send_file(
+
+        BytesIO(image_data),
+
+        mimetype="image/jpeg",
+
+        download_name=
+            "laptop_screenshot.jpg"
+
+    )
+
+
+# ============================================================
+# CLEAN OLD SCREENSHOTS
+# ============================================================
+
+def screenshot_cleanup_loop():
+
+    while True:
+
+        time.sleep(60)
+
+        now = time.time()
+
+
+        with screenshots_lock:
+
+            expired = [
+
+                screenshot_id
+
+                for screenshot_id, result
+                in screenshot_results.items()
+
+                if now -
+                   result.get(
+                       "created_at",
+                       now
+                   ) > 300
+
+            ]
+
+
+            for screenshot_id in expired:
+
+                screenshot_results.pop(
+                    screenshot_id,
+                    None
+                )
 
 
 # ============================================================
@@ -1392,7 +1952,8 @@ def poll():
     if not relay_authorized():
 
         return jsonify({
-            "error": "Unauthorized"
+            "error":
+                "Unauthorized"
         }), 401
 
 
@@ -1404,7 +1965,8 @@ def poll():
 
 
     return jsonify({
-        "commands": commands
+        "commands":
+            commands
     })
 
 
@@ -1416,7 +1978,8 @@ def poll():
 def health():
 
     return jsonify({
-        "status": "ok"
+        "status":
+            "ok"
     })
 
 
@@ -1430,33 +1993,48 @@ def status():
     if not relay_authorized():
 
         return jsonify({
-            "error": "Unauthorized"
+            "error":
+                "Unauthorized"
         }), 401
 
 
     with lock:
 
-        queue_size = len(
-            pending_commands
-        )
+        queue_size =
+            len(
+                pending_commands
+            )
 
 
     with apps_lock:
 
-        app_count = len(
-            available_apps
-        )
+        app_count =
+            len(
+                available_apps
+            )
+
+
+    with screenshots_lock:
+
+        screenshot_count =
+            len(
+                screenshot_results
+            )
 
 
     return jsonify({
 
-        "relay": "online",
+        "relay":
+            "online",
 
         "queued_commands":
             queue_size,
 
         "discovered_apps":
-            app_count
+            app_count,
+
+        "screenshots":
+            screenshot_count
 
     })
 
@@ -1471,9 +2049,18 @@ if __name__ == "__main__":
         "Laptop Remote Relay starting..."
     )
 
+
     print(
         f"Listening on port {PORT}"
     )
+
+
+    threading.Thread(
+        target=
+            screenshot_cleanup_loop,
+
+        daemon=True
+    ).start()
 
 
     app.run(
