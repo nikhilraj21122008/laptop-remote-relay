@@ -1,589 +1,510 @@
 import os
+import io
 import time
+import uuid
 import threading
 
 from flask import (
     Flask,
     request,
     jsonify,
-    render_template_string,
     session,
+    redirect,
+    render_template_string,
     send_file
 )
 
-from io import BytesIO
-
-
 app = Flask(__name__)
 
-
-# ============================================================
+# =========================================================
 # CONFIG
-# ============================================================
+# =========================================================
 
-RELAY_KEY = os.environ.get(
-    "RELAY_KEY",
-    ""
-)
-
-PANEL_PASSWORD = os.environ.get(
-    "PANEL_PASSWORD",
-    ""
-)
-
-PORT = int(
-    os.environ.get(
-        "PORT",
-        "10000"
-    )
-)
-
+RELAY_KEY = os.environ.get("RELAY_KEY", "")
+PANEL_PASSWORD = os.environ.get("PANEL_PASSWORD", "")
+PORT = int(os.environ.get("PORT", "10000"))
 
 app.secret_key = os.environ.get(
     "PANEL_PASSWORD",
     "change-this-secret"
 )
 
-
-# ============================================================
+# =========================================================
 # STORAGE
-# ============================================================
+# =========================================================
 
 pending_commands = []
-
 available_apps = []
 
-screenshot_results = {}
-
 lock = threading.Lock()
-
 apps_lock = threading.Lock()
 
-screenshots_lock = threading.Lock()
+# Screenshot results
+screenshot_results = {}
+screenshot_lock = threading.Lock()
+
+# Screenshot result maximum lifetime
+SCREENSHOT_TTL = 300
 
 
-# ============================================================
-# RELAY SECURITY
-# ============================================================
+# =========================================================
+# SECURITY HELPERS
+# =========================================================
 
 def relay_authorized():
-
     return (
-        bool(RELAY_KEY)
-        and
-        request.headers.get(
-            "X-Relay-Key"
-        ) == RELAY_KEY
+        RELAY_KEY
+        and request.headers.get("X-Relay-Key", "") == RELAY_KEY
     )
 
-
-# ============================================================
-# PANEL SECURITY
-# ============================================================
 
 def panel_logged_in():
-
-    return (
-        session.get(
-            "panel_logged_in"
-        ) is True
-    )
+    return session.get("logged_in") is True
 
 
-# ============================================================
+# =========================================================
 # APP ICONS
-# ============================================================
+# =========================================================
 
 def get_app_icon(name):
-
     name_lower = name.lower()
 
+    icons = [
+        ("whatsapp", "💬"),
+        ("instagram", "📸"),
+        ("chrome", "🌐"),
+        ("edge", "🌐"),
+        ("firefox", "🦊"),
+        ("visual studio code", "💻"),
+        ("vs code", "💻"),
+        ("spotify", "🎵"),
+        ("discord", "🎮"),
+        ("krita", "🎨"),
+        ("paint", "🎨"),
+        ("steam", "🎮"),
+        ("epic games", "🎮"),
+        ("calculator", "🧮"),
+        ("notepad", "📝"),
+        ("explorer", "📁"),
+        ("file explorer", "📁"),
+        ("vlc", "🎬"),
+        ("zoom", "📹"),
+        ("telegram", "✈️"),
+        ("github", "🐙"),
+        ("office", "📊"),
+        ("word", "📘"),
+        ("excel", "📗"),
+        ("powerpoint", "📙"),
+    ]
 
-    if "whatsapp" in name_lower:
-        return "💬"
+    for keyword, icon in icons:
+        if keyword in name_lower:
+            return icon
 
-    if "instagram" in name_lower:
-        return "📷"
-
-    if "chrome" in name_lower:
-        return "🌐"
-
-    if "edge" in name_lower:
-        return "🌐"
-
-    if "firefox" in name_lower:
-        return "🌐"
-
-    if "browser" in name_lower:
-        return "🌐"
-
-    if "visual studio code" in name_lower:
-        return "💻"
-
-    if "vs code" in name_lower:
-        return "💻"
-
-    if "spotify" in name_lower:
-        return "🎵"
-
-    if "discord" in name_lower:
-        return "💬"
-
-    if "krita" in name_lower:
-        return "🎨"
-
-    if "paint" in name_lower:
-        return "🎨"
-
-    if "steam" in name_lower:
-        return "🎮"
-
-    if "epic games" in name_lower:
-        return "🎮"
-
-    if "calculator" in name_lower:
-        return "🧮"
-
-    if "notepad" in name_lower:
-        return "📝"
-
-    if "explorer" in name_lower:
-        return "📁"
-
-    if "file explorer" in name_lower:
-        return "📁"
-
-    if "vlc" in name_lower:
-        return "🎬"
-
-    if "zoom" in name_lower:
-        return "📹"
-
-    if "telegram" in name_lower:
-        return "💬"
-
-    if "github" in name_lower:
-        return "🐙"
-
-    if "office" in name_lower:
-        return "📄"
-
-    if "word" in name_lower:
-        return "📘"
-
-    if "excel" in name_lower:
-        return "📊"
-
-    if "powerpoint" in name_lower:
-        return "📽️"
-
-    return "📱"
+    return "📦"
 
 
-# ============================================================
-# PHONE PANEL
-# ============================================================
+# =========================================================
+# LOGIN PAGE
+# =========================================================
+
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Laptop Remote Login</title>
+
+    <style>
+        body {
+            margin: 0;
+            background: #111827;
+            color: white;
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .box {
+            width: 90%;
+            max-width: 380px;
+            background: #1f2937;
+            padding: 25px;
+            border-radius: 18px;
+            box-sizing: border-box;
+        }
+
+        h1 {
+            text-align: center;
+        }
+
+        input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 14px;
+            margin-top: 15px;
+            border-radius: 10px;
+            border: none;
+            font-size: 16px;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            margin-top: 15px;
+            border: none;
+            border-radius: 10px;
+            background: #2563eb;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .error {
+            color: #f87171;
+            text-align: center;
+            margin-top: 12px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="box">
+
+    <h1>🔐 Laptop Remote</h1>
+
+    <form method="POST">
+
+        <input
+            type="password"
+            name="password"
+            placeholder="Panel Password"
+            required
+        >
+
+        <button type="submit">
+            Login
+        </button>
+
+    </form>
+
+    {% if error %}
+        <div class="error">
+            {{ error }}
+        </div>
+    {% endif %}
+
+</div>
+
+</body>
+</html>
+"""
+
+
+# =========================================================
+# MAIN PANEL
+# =========================================================
 
 PANEL_HTML = """
 <!DOCTYPE html>
-
 <html>
 
 <head>
 
-    <meta name="viewport"
-          content="width=device-width, initial-scale=1">
-
-    <title>Laptop Remote</title>
-
-
-    <style>
-
-        * {
-            box-sizing: border-box;
-        }
-
-
-        body {
-
-            margin: 0;
-
-            padding: 20px;
-
-            font-family: Arial, sans-serif;
-
-            background: #111;
-
-            color: white;
-
-        }
-
-
-        .container {
-
-            width: 100%;
-
-            max-width: 650px;
-
-            margin: auto;
-
-        }
-
-
-        h1 {
-
-            text-align: center;
-
-            margin-bottom: 25px;
-
-        }
-
-
-        h2 {
-
-            margin-top: 30px;
-
-            margin-bottom: 12px;
-
-        }
-
-
-        button {
-
-            width: 100%;
-
-            padding: 15px;
-
-            margin: 6px 0;
-
-            border: none;
-
-            border-radius: 12px;
-
-            font-size: 17px;
-
-            cursor: pointer;
-
-            background: #222;
-
-            color: white;
-
-        }
-
-
-        button:active {
-
-            transform: scale(0.98);
-
-        }
-
-
-        .quick-button {
-
-            background: #1d1d1d;
-
-        }
-
-
-        .screenshot-button {
-
-            background: #252525;
-
-            border: 1px solid #444;
-
-        }
-
-
-        .app-button {
-
-            display: flex;
-
-            align-items: center;
-
-            text-align: left;
-
-            gap: 14px;
-
-            background: #1c1c1c;
-
-            border: 1px solid #333;
-
-        }
-
-
-        .app-icon {
-
-            font-size: 28px;
-
-            width: 38px;
-
-            text-align: center;
-
-            flex-shrink: 0;
-
-        }
-
-
-        .app-name {
-
-            font-size: 16px;
-
-            word-break: break-word;
-
-        }
-
-
-        #result {
-
-            margin-top: 20px;
-
-            padding: 15px;
-
-            border-radius: 12px;
-
-            background: #222;
-
-            text-align: center;
-
-            word-break: break-word;
-
-        }
-
-
-        #screenshot-preview {
-
-            margin-top: 15px;
-
-        }
-
-
-        #screenshot-preview img {
-
-            width: 100%;
-
-            max-width: 100%;
-
-            height: auto;
-
-            border-radius: 12px;
-
-            border: 1px solid #444;
-
-            display: block;
-
-        }
-
-
-        .apps-header {
-
-            display: flex;
-
-            justify-content: space-between;
-
-            align-items: center;
-
-            gap: 10px;
-
-        }
-
-
-        .refresh-button {
-
-            width: auto;
-
-            padding: 10px 14px;
-
-            margin: 0;
-
-            font-size: 14px;
-
-            background: #333;
-
-        }
-
-
-        #apps-list {
-
-            margin-top: 10px;
-
-        }
-
-
-        .empty {
-
-            padding: 20px;
-
-            text-align: center;
-
-            color: #aaa;
-
-            background: #1c1c1c;
-
-            border-radius: 12px;
-
-        }
-
-
-        .count {
-
-            color: #aaa;
-
-            font-size: 14px;
-
-            margin-bottom: 10px;
-
-        }
-
-
-        .logout {
-
-            margin-top: 30px;
-
-            background: #2a1616;
-
-        }
-
-    </style>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Laptop Remote</title>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: #0f172a;
+    color: white;
+    font-family: Arial, sans-serif;
+}
+
+.container {
+    width: 94%;
+    max-width: 800px;
+    margin: auto;
+    padding: 20px 0 40px;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.header h1 {
+    margin: 0;
+}
+
+.logout {
+    background: #dc2626;
+    color: white;
+    border: none;
+    padding: 9px 14px;
+    border-radius: 9px;
+    cursor: pointer;
+}
+
+.card {
+    background: #1e293b;
+    padding: 18px;
+    border-radius: 16px;
+    margin-bottom: 18px;
+}
+
+.card h2 {
+    margin-top: 0;
+}
+
+.quick-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+}
+
+.quick-button {
+    border: none;
+    border-radius: 12px;
+    padding: 14px 8px;
+    color: white;
+    background: #334155;
+    font-size: 15px;
+    cursor: pointer;
+}
+
+.quick-button:hover {
+    background: #475569;
+}
+
+.status-button {
+    background: #2563eb;
+}
+
+.danger-button {
+    background: #dc2626;
+}
+
+.warning-button {
+    background: #b45309;
+}
+
+.screenshot-button {
+    background: #7c3aed;
+}
+
+.apps-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.app-button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-align: left;
+    background: #334155;
+    color: white;
+    border: none;
+    border-radius: 12px;
+    padding: 12px;
+    cursor: pointer;
+    min-height: 55px;
+}
+
+.app-button:hover {
+    background: #475569;
+}
+
+.app-icon {
+    font-size: 24px;
+    flex-shrink: 0;
+}
+
+.app-name {
+    font-size: 14px;
+    word-break: break-word;
+}
+
+.refresh-button {
+    width: 100%;
+    padding: 12px;
+    margin-bottom: 12px;
+    border: none;
+    border-radius: 10px;
+    background: #0ea5e9;
+    color: white;
+    font-size: 15px;
+    cursor: pointer;
+}
+
+.result {
+    margin-top: 15px;
+    background: #020617;
+    border-radius: 12px;
+    padding: 12px;
+    min-height: 45px;
+    word-break: break-word;
+}
+
+.result img {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    border-radius: 10px;
+}
+
+.count {
+    color: #94a3b8;
+    font-size: 14px;
+    margin-bottom: 12px;
+}
+
+@media (max-width: 500px) {
+
+    .quick-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .apps-grid {
+        grid-template-columns: 1fr;
+    }
+
+}
+
+</style>
 
 </head>
 
-
 <body>
-
 
 <div class="container">
 
+    <div class="header">
 
-    <h1>💻 Laptop Remote</h1>
+        <h1>💻 Laptop Remote</h1>
 
-
-    <!-- QUICK CONTROLS -->
-
-    <h2>⚡ Quick Controls</h2>
-
-
-    <button class="quick-button"
-            onclick="sendCommand('status')">
-
-        🟢 Status
-
-    </button>
-
-
-    <button class="screenshot-button"
-            onclick="takeScreenshot()">
-
-        📸 Screenshot
-
-    </button>
-
-
-    <button class="quick-button"
-            onclick="sendCommand('lock')">
-
-        🔒 Lock Laptop
-
-    </button>
-
-
-    <button class="quick-button"
-            onclick="sendCommand('sleep')">
-
-        😴 Sleep Laptop
-
-    </button>
-
-
-    <button class="quick-button"
-            onclick="sendCommand('open_notepad')">
-
-        📝 Notepad
-
-    </button>
-
-
-    <button class="quick-button"
-            onclick="sendCommand('open_calculator')">
-
-        🧮 Calculator
-
-    </button>
-
-
-    <button class="quick-button"
-            onclick="sendCommand('open_paint')">
-
-        🎨 Paint
-
-    </button>
-
-
-    <button class="quick-button"
-            onclick="sendCommand('open_explorer')">
-
-        📁 Explorer
-
-    </button>
-
-
-    <!-- SCREENSHOT RESULT -->
-
-    <div id="screenshot-preview"></div>
-
-
-    <!-- INSTALLED APPS -->
-
-    <div class="apps-header">
-
-        <h2>📱 Installed Apps</h2>
-
-        <button class="refresh-button"
-                onclick="loadApps()">
-
-            🔄 Refresh
-
+        <button
+            class="logout"
+            onclick="location.href='/logout'"
+        >
+            Logout
         </button>
 
     </div>
 
 
-    <div id="app-count"
-         class="count">
+    <!-- QUICK CONTROLS -->
 
-        Loading apps...
+    <div class="card">
 
-    </div>
+        <h2>⚡ Quick Controls</h2>
 
+        <div class="quick-grid">
 
-    <div id="apps-list">
+            <button
+                class="quick-button status-button"
+                onclick="sendCommand('status')"
+            >
+                📊 Status
+            </button>
 
-        <div class="empty">
+            <button
+                class="quick-button danger-button"
+                onclick="sendCommand('lock')"
+            >
+                🔒 Lock Laptop
+            </button>
 
-            ⏳ Loading discovered apps...
+            <button
+                class="quick-button warning-button"
+                onclick="sendCommand('sleep')"
+            >
+                😴 Sleep Laptop
+            </button>
 
+            <button
+                class="quick-button"
+                onclick="sendCommand('open_notepad')"
+            >
+                📝 Notepad
+            </button>
+
+            <button
+                class="quick-button"
+                onclick="sendCommand('open_calculator')"
+            >
+                🧮 Calculator
+            </button>
+
+            <button
+                class="quick-button"
+                onclick="sendCommand('open_paint')"
+            >
+                🎨 Paint
+            </button>
+
+            <button
+                class="quick-button"
+                onclick="sendCommand('open_explorer')"
+            >
+                📁 Explorer
+            </button>
+
+            <button
+                class="quick-button screenshot-button"
+                onclick="takeScreenshot()"
+            >
+                📸 Screenshot
+            </button>
+
+        </div>
+
+        <div id="result" class="result">
+            Ready.
         </div>
 
     </div>
 
 
-    <!-- RESULT -->
+    <!-- INSTALLED APPS -->
 
-    <div id="result">
+    <div class="card">
 
-        Ready...
+        <h2>📦 Installed Apps</h2>
+
+        <div id="appCount" class="count">
+            Loading apps...
+        </div>
+
+        <button
+            class="refresh-button"
+            onclick="loadApps()"
+        >
+            🔄 Refresh Apps
+        </button>
+
+        <div
+            id="apps"
+            class="apps-grid"
+        ></div>
 
     </div>
-
-
-    <!-- LOGOUT -->
-
-    <button class="logout"
-            onclick="logout()">
-
-        🚪 Logout
-
-    </button>
-
 
 </div>
 
@@ -591,79 +512,75 @@ PANEL_HTML = """
 <script>
 
 
-// ============================================================
-// RESULT
-// ============================================================
+// =========================================================
+// RESULT BOX
+// =========================================================
 
 function showResult(message) {
 
-    document.getElementById(
-        "result"
-    ).innerText = message;
+    document.getElementById("result").textContent = message;
 
 }
 
 
-// ============================================================
+// =========================================================
 // SEND NORMAL COMMAND
-// ============================================================
+// =========================================================
 
 async function sendCommand(command) {
 
-    showResult(
-        "⏳ Sending command..."
-    );
-
+    showResult("⏳ Sending command...");
 
     try {
 
         const response = await fetch(
             "/panel/command",
             {
-
                 method: "POST",
 
                 headers: {
-                    "Content-Type":
-                        "application/json"
+                    "Content-Type": "application/json"
                 },
 
                 body: JSON.stringify({
                     command: command
                 })
-
             }
         );
 
 
-        const data =
-            await response.json();
+        const data = await response.json();
 
 
         if (!response.ok) {
 
             showResult(
                 "❌ " +
-                (
-                    data.error ||
-                    "Command failed"
-                )
+                (data.error || "Command failed")
             );
 
             return;
         }
 
 
-        showResult(
-            "✅ " +
-            (
-                data.status ||
-                "Command queued"
-            )
-        );
+        if (command === "status" && data.command_id) {
 
+            showResult(
+                "✅ Status command sent."
+            );
 
-    } catch (error) {
+        } else {
+
+            showResult(
+                "✅ " +
+                (data.status || "Command queued")
+            );
+
+        }
+
+    }
+
+    catch (error) {
 
         showResult(
             "❌ Connection error"
@@ -674,20 +591,15 @@ async function sendCommand(command) {
 }
 
 
-// ============================================================
-// SCREENSHOT
-// ============================================================
+// =========================================================
+// OPEN DISCOVERED APP
+// =========================================================
 
-async function takeScreenshot() {
+async function openDiscoveredApp(appId, appName) {
 
     showResult(
-        "📸 Requesting laptop screenshot..."
+        "⏳ Opening " + appName + "..."
     );
-
-
-    document.getElementById(
-        "screenshot-preview"
-    ).innerHTML = "";
 
 
     try {
@@ -695,49 +607,28 @@ async function takeScreenshot() {
         const response = await fetch(
             "/panel/command",
             {
-
                 method: "POST",
 
                 headers: {
-                    "Content-Type":
-                        "application/json"
+                    "Content-Type": "application/json"
                 },
 
                 body: JSON.stringify({
-                    command:
-                        "screenshot"
+                    command: "open_app",
+                    app_id: appId
                 })
-
             }
         );
 
 
-        const data =
-            await response.json();
+        const data = await response.json();
 
 
         if (!response.ok) {
 
             showResult(
                 "❌ " +
-                (
-                    data.error ||
-                    "Screenshot request failed"
-                )
-            );
-
-            return;
-        }
-
-
-        const commandId =
-            data.command_id;
-
-
-        if (!commandId) {
-
-            showResult(
-                "❌ Screenshot ID missing"
+                (data.error || "Could not open app")
             );
 
             return;
@@ -745,16 +636,12 @@ async function takeScreenshot() {
 
 
         showResult(
-            "⏳ Capturing screenshot..."
+            "✅ " + appName + " queued"
         );
 
+    }
 
-        await waitForScreenshot(
-            commandId
-        );
-
-
-    } catch (error) {
+    catch (error) {
 
         showResult(
             "❌ Connection error"
@@ -765,157 +652,33 @@ async function takeScreenshot() {
 }
 
 
-// ============================================================
-// WAIT FOR SCREENSHOT
-// ============================================================
+// =========================================================
+// LOAD INSTALLED APPS
+// =========================================================
 
-async function waitForScreenshot(
-    commandId
-) {
+async function loadApps() {
 
-    const maxAttempts = 30;
+    const appsContainer =
+        document.getElementById("apps");
 
-    const delay = 1000;
-
-
-    for (
-        let attempt = 0;
-        attempt < maxAttempts;
-        attempt++
-    ) {
-
-        try {
-
-            const response =
-                await fetch(
-                    "/panel/screenshot/" +
-                    encodeURIComponent(
-                        commandId
-                    )
-                );
+    const count =
+        document.getElementById("appCount");
 
 
-            if (response.ok) {
-
-                const blob =
-                    await response.blob();
+    count.textContent =
+        "⏳ Loading apps...";
 
 
-                const imageUrl =
-                    URL.createObjectURL(
-                        blob
-                    );
-
-
-                document.getElementById(
-                    "screenshot-preview"
-                ).innerHTML =
-
-                    '<img src="' +
-                    imageUrl +
-                    '" alt="Laptop Screenshot">';
-
-
-                showResult(
-                    "✅ Screenshot received"
-                );
-
-                return;
-            }
-
-
-            if (
-                response.status !== 202
-            ) {
-
-                let data = {};
-
-                try {
-                    data =
-                        await response.json();
-                } catch (e) {}
-
-
-                showResult(
-                    "❌ " +
-                    (
-                        data.error ||
-                        "Screenshot unavailable"
-                    )
-                );
-
-                return;
-            }
-
-
-        } catch (error) {
-
-            showResult(
-                "❌ Connection error"
-            );
-
-            return;
-        }
-
-
-        await new Promise(
-            resolve =>
-                setTimeout(
-                    resolve,
-                    delay
-                )
-        );
-
-    }
-
-
-    showResult(
-        "❌ Screenshot timed out"
-    );
-
-}
-
-
-// ============================================================
-// OPEN DISCOVERED APP
-// ============================================================
-
-async function openDiscoveredApp(
-    appId,
-    appName
-) {
-
-    showResult(
-        "⏳ Opening " +
-        appName +
-        "..."
-    );
+    appsContainer.innerHTML = "";
 
 
     try {
 
         const response =
             await fetch(
-                "/panel/command",
+                "/panel/apps",
                 {
-
-                    method: "POST",
-
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-
-                    body: JSON.stringify({
-
-                        command:
-                            "open_app",
-
-                        app_id:
-                            appId
-
-                    })
-
+                    cache: "no-store"
                 }
             );
 
@@ -926,89 +689,8 @@ async function openDiscoveredApp(
 
         if (!response.ok) {
 
-            showResult(
-                "❌ " +
-                (
-                    data.error ||
-                    "Could not open app"
-                )
-            );
-
-            return;
-        }
-
-
-        showResult(
-            "✅ " +
-            appName +
-            " command sent"
-        );
-
-
-    } catch (error) {
-
-        showResult(
-            "❌ Connection error"
-        );
-
-    }
-
-}
-
-
-// ============================================================
-// LOAD INSTALLED APPS
-// ============================================================
-
-async function loadApps() {
-
-    const list =
-        document.getElementById(
-            "apps-list"
-        );
-
-    const count =
-        document.getElementById(
-            "app-count"
-        );
-
-
-    list.innerHTML = `
-        <div class="empty">
-            ⏳ Loading discovered apps...
-        </div>
-    `;
-
-
-    count.innerText =
-        "Checking laptop apps...";
-
-
-    try {
-
-        const response =
-            await fetch(
-                "/panel/apps"
-            );
-
-
-        const data =
-            await response.json();
-
-
-        if (!response.ok) {
-
-            list.innerHTML = `
-                <div class="empty">
-                    ❌ ${
-                        data.error ||
-                        "Could not load apps"
-                    }
-                </div>
-            `;
-
-            count.innerText =
-                "Apps unavailable";
+            count.textContent =
+                "❌ Failed to load apps";
 
             return;
         }
@@ -1018,80 +700,51 @@ async function loadApps() {
             data.apps || [];
 
 
+        count.textContent =
+            apps.length +
+            " apps available";
+
+
         if (apps.length === 0) {
 
-            list.innerHTML = `
-                <div class="empty">
-
-                    📱 No discovered apps yet.
-
-                    <br><br>
-
-                    Make sure the laptop agent
-                    is running and connected.
-
-                </div>
-            `;
-
-            count.innerText =
-                "0 apps";
+            appsContainer.innerHTML =
+                "<div>No apps registered yet.</div>";
 
             return;
         }
 
 
-        count.innerText =
-            apps.length +
-            " apps discovered";
-
-
-        list.innerHTML = "";
-
-
         for (const app of apps) {
 
             const button =
-                document.createElement(
-                    "button"
-                );
-
+                document.createElement("button");
 
             button.className =
                 "app-button";
 
 
             const icon =
-                document.createElement(
-                    "span"
-                );
+                document.createElement("span");
 
             icon.className =
                 "app-icon";
 
-            icon.innerText =
-                app.icon ||
-                "📱";
+            icon.textContent =
+                app.icon || "📦";
 
 
             const name =
-                document.createElement(
-                    "span"
-                );
+                document.createElement("span");
 
             name.className =
                 "app-name";
 
-            name.innerText =
+            name.textContent =
                 app.name;
 
 
-            button.appendChild(
-                icon
-            );
-
-            button.appendChild(
-                name
-            );
+            button.appendChild(icon);
+            button.appendChild(name);
 
 
             button.onclick =
@@ -1105,307 +758,278 @@ async function loadApps() {
                 };
 
 
-            list.appendChild(
+            appsContainer.appendChild(
                 button
             );
 
         }
 
+    }
 
-    } catch (error) {
+    catch (error) {
 
-        list.innerHTML = `
-            <div class="empty">
-                ❌ Could not connect to relay.
-            </div>
-        `;
-
-        count.innerText =
-            "Connection failed";
+        count.textContent =
+            "❌ Connection error";
 
     }
 
 }
 
 
-// ============================================================
-// LOGOUT
-// ============================================================
+// =========================================================
+// TAKE REMOTE SCREENSHOT
+// =========================================================
 
-async function logout() {
+async function takeScreenshot() {
+
+    showResult(
+        "⏳ Taking screenshot..."
+    );
+
 
     try {
 
-        await fetch(
-            "/logout",
-            {
-                method: "POST"
+        const response =
+            await fetch(
+                "/panel/command",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body: JSON.stringify({
+                        command: "screenshot"
+                    })
+                }
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            showResult(
+                "❌ " +
+                (data.error ||
+                 "Screenshot command failed")
+            );
+
+            return;
+        }
+
+
+        const commandId =
+            data.command_id;
+
+
+        if (!commandId) {
+
+            showResult(
+                "❌ Screenshot command ID missing"
+            );
+
+            return;
+        }
+
+
+        const maxAttempts = 30;
+
+
+        for (
+            let attempt = 0;
+            attempt < maxAttempts;
+            attempt++
+        ) {
+
+            await new Promise(
+                resolve =>
+                    setTimeout(resolve, 1000)
+            );
+
+
+            const imageResponse =
+                await fetch(
+                    "/panel/screenshot/" +
+                    encodeURIComponent(commandId),
+                    {
+                        cache: "no-store"
+                    }
+                );
+
+
+            // Laptop is still processing
+            if (
+                imageResponse.status === 202
+            ) {
+
+                showResult(
+                    "⏳ Waiting for laptop screenshot..."
+                );
+
+                continue;
             }
+
+
+            // Something went wrong
+            if (!imageResponse.ok) {
+
+                let errorData = {};
+
+                try {
+
+                    errorData =
+                        await imageResponse.json();
+
+                } catch (e) {}
+
+
+                showResult(
+                    "❌ " +
+                    (
+                        errorData.error ||
+                        "Screenshot failed"
+                    )
+                );
+
+                return;
+            }
+
+
+            // Screenshot received
+            const blob =
+                await imageResponse.blob();
+
+
+            const imageUrl =
+                URL.createObjectURL(blob);
+
+
+            const result =
+                document.getElementById(
+                    "result"
+                );
+
+
+            result.innerHTML = "";
+
+
+            const image =
+                document.createElement("img");
+
+
+            image.src =
+                imageUrl;
+
+
+            image.alt =
+                "Laptop Screenshot";
+
+
+            result.appendChild(image);
+
+
+            return;
+
+        }
+
+
+        showResult(
+            "⏱️ Screenshot timed out. Make sure laptop is online."
         );
 
-    } finally {
+    }
 
-        window.location.href = "/";
+    catch (error) {
+
+        showResult(
+            "❌ Connection error"
+        );
 
     }
 
 }
 
 
-// ============================================================
-// LOAD APPS
-// ============================================================
+// =========================================================
+// LOAD APPS WHEN PAGE OPENS
+// =========================================================
 
 loadApps();
 
-
 </script>
 
-
 </body>
 
 </html>
 """
 
 
-# ============================================================
-# LOGIN HTML
-# ============================================================
-
-LOGIN_HTML = """
-<!DOCTYPE html>
-
-<html>
-
-<head>
-
-    <meta name="viewport"
-          content="width=device-width, initial-scale=1">
-
-    <title>Laptop Remote Login</title>
-
-
-    <style>
-
-        body {
-
-            margin: 0;
-
-            min-height: 100vh;
-
-            display: flex;
-
-            align-items: center;
-
-            justify-content: center;
-
-            background: #111;
-
-            color: white;
-
-            font-family: Arial, sans-serif;
-
-            padding: 20px;
-
-        }
-
-
-        .box {
-
-            width: 100%;
-
-            max-width: 400px;
-
-            background: #1c1c1c;
-
-            padding: 25px;
-
-            border-radius: 16px;
-
-            text-align: center;
-
-        }
-
-
-        input {
-
-            width: 100%;
-
-            box-sizing: border-box;
-
-            padding: 15px;
-
-            margin: 15px 0;
-
-            border-radius: 10px;
-
-            border: 1px solid #444;
-
-            background: #111;
-
-            color: white;
-
-            font-size: 16px;
-
-        }
-
-
-        button {
-
-            width: 100%;
-
-            padding: 15px;
-
-            border: none;
-
-            border-radius: 10px;
-
-            background: #333;
-
-            color: white;
-
-            font-size: 17px;
-
-            cursor: pointer;
-
-        }
-
-
-        .error {
-
-            color: #ff7777;
-
-            margin-bottom: 10px;
-
-        }
-
-    </style>
-
-</head>
-
-
-<body>
-
-
-<div class="box">
-
-    <h1>🔐 Laptop Remote</h1>
-
-    <p>Enter your panel password</p>
-
-
-    {% if error %}
-
-        <div class="error">
-
-            ❌ Wrong password
-
-        </div>
-
-    {% endif %}
-
-
-    <form method="POST"
-          action="/login">
-
-        <input
-            type="password"
-            name="password"
-            placeholder="Panel password"
-            autocomplete="current-password"
-            required
-        >
-
-
-        <button type="submit">
-
-            🔓 Login
-
-        </button>
-
-    </form>
-
-</div>
-
-
-</body>
-
-</html>
-"""
-
-
-# ============================================================
+# =========================================================
 # HOME
-# ============================================================
+# =========================================================
 
 @app.get("/")
 def home():
 
-    if panel_logged_in():
-
-        return render_template_string(
-            PANEL_HTML
-        )
+    if not panel_logged_in():
+        return redirect("/login")
 
     return render_template_string(
-        LOGIN_HTML,
-        error=False
+        PANEL_HTML
     )
 
 
-# ============================================================
+# =========================================================
 # LOGIN
-# ============================================================
+# =========================================================
 
-@app.post("/login")
+@app.route("/login", methods=["GET", "POST"])
 def login():
 
-    password = request.form.get(
-        "password",
-        ""
-    )
+    if request.method == "POST":
 
+        password = request.form.get("password", "")
 
-    if (
-        PANEL_PASSWORD
-        and password == PANEL_PASSWORD
-    ):
+        if (
+            PANEL_PASSWORD
+            and password == PANEL_PASSWORD
+        ):
 
-        session[
-            "panel_logged_in"
-        ] = True
+            session["logged_in"] = True
 
+            return redirect("/")
 
         return render_template_string(
-            PANEL_HTML
+            LOGIN_HTML,
+            error="❌ Incorrect password"
         )
 
 
     return render_template_string(
-        LOGIN_HTML,
-        error=True
-    ), 401
+        LOGIN_HTML
+    )
 
 
-# ============================================================
+# =========================================================
 # LOGOUT
-# ============================================================
+# =========================================================
 
-@app.post("/logout")
+@app.get("/logout")
 def logout():
 
     session.clear()
 
-
-    return jsonify({
-        "status":
-            "logged out"
-    })
+    return redirect("/login")
 
 
-# ============================================================
-# GET DISCOVERED APPS
-# ============================================================
+# =========================================================
+# GET INSTALLED APPS
+# =========================================================
 
 @app.get("/panel/apps")
 def panel_apps():
@@ -1413,53 +1037,33 @@ def panel_apps():
     if not panel_logged_in():
 
         return jsonify({
-            "error":
-                "Login required"
+            "error": "Login required"
         }), 401
 
 
     with apps_lock:
 
-        apps = [
-
+        apps_copy = [
             {
-                "id":
-                    app["id"],
-
-                "name":
-                    app["name"],
-
-                "icon":
-                    get_app_icon(
-                        app["name"]
-                    )
-
+                "id": app_item["id"],
+                "name": app_item["name"],
+                "icon": get_app_icon(
+                    app_item["name"]
+                )
             }
 
-            for app in available_apps
+            for app_item in available_apps
         ]
 
 
-    apps.sort(
-        key=lambda item:
-            item["name"].lower()
-    )
-
-
     return jsonify({
-
-        "apps":
-            apps,
-
-        "count":
-            len(apps)
-
+        "apps": apps_copy
     })
 
 
-# ============================================================
-# REGISTER APPS
-# ============================================================
+# =========================================================
+# REGISTER APPS FROM LAPTOP
+# =========================================================
 
 @app.post("/register_apps")
 def register_apps():
@@ -1467,8 +1071,7 @@ def register_apps():
     if not relay_authorized():
 
         return jsonify({
-            "error":
-                "Unauthorized"
+            "error": "Unauthorized"
         }), 401
 
 
@@ -1477,28 +1080,21 @@ def register_apps():
     ) or {}
 
 
-    incoming_apps =
-        data.get(
-            "apps",
-            []
-        )
+    apps = data.get("apps", [])
 
 
-    if not isinstance(
-        incoming_apps,
-        list
-    ):
+    if not isinstance(apps, list):
 
         return jsonify({
-            "error":
-                "Invalid apps data"
+            "error": "apps must be a list"
         }), 400
 
 
-    clean_apps = []
+    cleaned = []
+    seen = set()
 
 
-    for item in incoming_apps:
+    for item in apps:
 
         if not isinstance(
             item,
@@ -1508,52 +1104,38 @@ def register_apps():
 
 
         app_id = str(
-            item.get(
-                "id",
-                ""
-            )
+            item.get("id", "")
         ).strip()
 
 
-        app_name = str(
-            item.get(
-                "name",
-                ""
-            )
+        name = str(
+            item.get("name", "")
         ).strip()
 
 
-        if not app_id or not app_name:
+        if not app_id or not name:
             continue
 
 
+        # Basic size protection
         if len(app_id) > 100:
             continue
 
-
-        if len(app_name) > 300:
+        if len(name) > 300:
             continue
 
 
-        clean_apps.append({
+        if app_id in seen:
+            continue
 
-            "id":
-                app_id,
 
-            "name":
-                app_name
+        seen.add(app_id)
 
+
+        cleaned.append({
+            "id": app_id,
+            "name": name
         })
-
-
-    unique_apps = {}
-
-
-    for item in clean_apps:
-
-        unique_apps[
-            item["id"]
-        ] = item
 
 
     with apps_lock:
@@ -1561,30 +1143,19 @@ def register_apps():
         available_apps.clear()
 
         available_apps.extend(
-            unique_apps.values()
+            cleaned
         )
 
 
-    print(
-        f"📱 Received "
-        f"{len(unique_apps)} apps from laptop."
-    )
-
-
     return jsonify({
-
-        "status":
-            "Apps registered",
-
-        "count":
-            len(unique_apps)
-
+        "status": "registered",
+        "count": len(cleaned)
     })
 
 
-# ============================================================
-# PHONE COMMAND QUEUE
-# ============================================================
+# =========================================================
+# QUEUE COMMAND FROM PHONE
+# =========================================================
 
 @app.post("/panel/command")
 def panel_command():
@@ -1592,8 +1163,7 @@ def panel_command():
     if not panel_logged_in():
 
         return jsonify({
-            "error":
-                "Login required"
+            "error": "Login required"
         }), 401
 
 
@@ -1603,130 +1173,92 @@ def panel_command():
 
 
     command = str(
-        data.get(
-            "command",
-            ""
-        )
-    ).strip().lower()
+        data.get("command", "")
+    ).strip()
 
 
-    allowed = {
-
+    allowed_commands = {
         "status",
-
-        "screenshot",
-
         "lock",
-
         "sleep",
-
         "open_notepad",
-
         "open_calculator",
-
         "open_paint",
-
         "open_explorer",
-
         "open_app",
-
+        "screenshot",
     }
 
 
-    if command not in allowed:
+    if command not in allowed_commands:
 
         return jsonify({
-            "error":
-                "Command not allowed"
+            "error": "Command not allowed"
         }), 400
 
 
-    command_id = str(
-        time.time_ns()
-    )
-
-
     command_item = {
-
-        "id":
-            command_id,
-
-        "command":
-            command
-
+        "id": uuid.uuid4().hex,
+        "command": command,
+        "created": time.time()
     }
 
 
-    # ========================================================
-    # SCREENSHOT
-    # ========================================================
-
-    if command == "screenshot":
-
-        with screenshots_lock:
-
-            screenshot_results[
-                command_id
-            ] = {
-
-                "status":
-                    "pending",
-
-                "created_at":
-                    time.time()
-
-            }
-
-
-    # ========================================================
-    # DISCOVERED APP
-    # ========================================================
+    # =====================================================
+    # OPEN DISCOVERED APP
+    # =====================================================
 
     if command == "open_app":
 
         app_id = str(
-            data.get(
-                "app_id",
-                ""
-            )
+            data.get("app_id", "")
         ).strip()
 
 
         if not app_id:
 
             return jsonify({
-                "error":
-                    "App ID required"
+                "error": "app_id required"
             }), 400
 
 
         with apps_lock:
 
-            registered = any(
-
-                app["id"] == app_id
-
-                for app in available_apps
-
-            )
+            valid_ids = {
+                app_item["id"]
+                for app_item in available_apps
+            }
 
 
-        if not registered:
+        if app_id not in valid_ids:
 
             return jsonify({
-                "error":
-                    "App is not currently registered"
+                "error": "Unknown app"
             }), 400
 
 
-        command_item[
-            "app_id"
-        ] = app_id
+        command_item["app_id"] = app_id
 
 
-    # ========================================================
+    # =====================================================
+    # SCREENSHOT TRACKING
+    # =====================================================
+
+    if command == "screenshot":
+
+        with screenshot_lock:
+
+            screenshot_results[
+                command_item["id"]
+            ] = {
+                "status": "pending",
+                "created": time.time()
+            }
+
+
+    # =====================================================
     # QUEUE COMMAND
-    # ========================================================
+    # =====================================================
 
     with lock:
 
@@ -1735,216 +1267,27 @@ def panel_command():
         )
 
 
+    response_data = {
+        "status": "queued",
+        "command": command
+    }
+
+
     if command == "screenshot":
 
-        return jsonify({
-
-            "status":
-                "Screenshot queued",
-
-            "command_id":
-                command_id
-
-        })
+        response_data[
+            "command_id"
+        ] = command_item["id"]
 
 
-    return jsonify({
-
-        "status":
-            "queued",
-
-        "command":
-            command
-
-    })
-
-
-# ============================================================
-# UPLOAD SCREENSHOT FROM LAPTOP
-# ============================================================
-
-@app.post("/upload_screenshot")
-def upload_screenshot():
-
-    if not relay_authorized():
-
-        return jsonify({
-            "error":
-                "Unauthorized"
-        }), 401
-
-
-    screenshot_id = request.headers.get(
-        "X-Screenshot-ID",
-        ""
-    ).strip()
-
-
-    if not screenshot_id:
-
-        return jsonify({
-            "error":
-                "Screenshot ID missing"
-        }), 400
-
-
-    image_data = request.get_data()
-
-
-    if not image_data:
-
-        return jsonify({
-            "error":
-                "Empty screenshot"
-        }), 400
-
-
-    # Keep screenshot size bounded.
-
-    if len(image_data) > 15 * 1024 * 1024:
-
-        return jsonify({
-            "error":
-                "Screenshot too large"
-        }), 413
-
-
-    with screenshots_lock:
-
-        screenshot_results[
-            screenshot_id
-        ] = {
-
-            "status":
-                "ready",
-
-            "data":
-                image_data,
-
-            "created_at":
-                time.time()
-
-        }
-
-
-    return jsonify({
-        "status":
-            "Screenshot received"
-    })
-
-
-# ============================================================
-# GET SCREENSHOT FOR PHONE
-# ============================================================
-
-@app.get(
-    "/panel/screenshot/<screenshot_id>"
-)
-def get_screenshot(screenshot_id):
-
-    if not panel_logged_in():
-
-        return jsonify({
-            "error":
-                "Login required"
-        }), 401
-
-
-    screenshot_id = str(
-        screenshot_id
-    ).strip()
-
-
-    with screenshots_lock:
-
-        result = screenshot_results.get(
-            screenshot_id
-        )
-
-
-    if not result:
-
-        return jsonify({
-            "error":
-                "Screenshot not found"
-        }), 404
-
-
-    if result["status"] == "pending":
-
-        return jsonify({
-            "status":
-                "pending"
-        }), 202
-
-
-    image_data = result.get(
-        "data"
+    return jsonify(
+        response_data
     )
 
 
-    if not image_data:
-
-        return jsonify({
-            "error":
-                "Screenshot data missing"
-        }), 500
-
-
-    return send_file(
-
-        BytesIO(image_data),
-
-        mimetype="image/jpeg",
-
-        download_name=
-            "laptop_screenshot.jpg"
-
-    )
-
-
-# ============================================================
-# CLEAN OLD SCREENSHOTS
-# ============================================================
-
-def screenshot_cleanup_loop():
-
-    while True:
-
-        time.sleep(60)
-
-        now = time.time()
-
-
-        with screenshots_lock:
-
-            expired = [
-
-                screenshot_id
-
-                for screenshot_id, result
-                in screenshot_results.items()
-
-                if now -
-                   result.get(
-                       "created_at",
-                       now
-                   ) > 300
-
-            ]
-
-
-            for screenshot_id in expired:
-
-                screenshot_results.pop(
-                    screenshot_id,
-                    None
-                )
-
-
-# ============================================================
-# LAPTOP POLLING
-# ============================================================
+# =========================================================
+# LAPTOP POLLS FOR COMMANDS
+# =========================================================
 
 @app.get("/poll")
 def poll():
@@ -1952,96 +1295,237 @@ def poll():
     if not relay_authorized():
 
         return jsonify({
-            "error":
-                "Unauthorized"
+            "error": "Unauthorized"
         }), 401
 
 
     with lock:
 
-        commands = pending_commands[:]
+        commands = list(
+            pending_commands
+        )
 
         pending_commands.clear()
 
 
     return jsonify({
-        "commands":
-            commands
+        "commands": commands
     })
 
 
-# ============================================================
-# HEALTH
-# ============================================================
+# =========================================================
+# LAPTOP UPLOADS SCREENSHOT
+# =========================================================
+
+@app.post("/upload_screenshot")
+def upload_screenshot():
+
+    if not relay_authorized():
+
+        return jsonify({
+            "error": "Unauthorized"
+        }), 401
+
+
+    command_id = request.args.get(
+        "command_id",
+        ""
+    ).strip()
+
+
+    if not command_id:
+
+        return jsonify({
+            "error": "command_id required"
+        }), 400
+
+
+    image = request.get_data(
+        cache=False
+    )
+
+
+    # Maximum screenshot size: 10 MB
+    if (
+        not image
+        or len(image) > 10 * 1024 * 1024
+    ):
+
+        return jsonify({
+            "error": "Invalid screenshot"
+        }), 400
+
+
+    with screenshot_lock:
+
+        if command_id not in screenshot_results:
+
+            return jsonify({
+                "error": "Unknown screenshot command"
+            }), 404
+
+
+        screenshot_results[
+            command_id
+        ] = {
+            "status": "ready",
+            "image": image,
+            "created": time.time()
+        }
+
+
+    return jsonify({
+        "status": "stored"
+    })
+
+
+# =========================================================
+# PHONE GETS SCREENSHOT
+# =========================================================
+
+@app.get("/panel/screenshot/<command_id>")
+def panel_screenshot(command_id):
+
+    if not panel_logged_in():
+
+        return jsonify({
+            "error": "Login required"
+        }), 401
+
+
+    command_id = command_id.strip()
+
+
+    with screenshot_lock:
+
+        result = screenshot_results.get(
+            command_id
+        )
+
+
+    if not result:
+
+        return jsonify({
+            "error": "Screenshot not found"
+        }), 404
+
+
+    # Expired
+    if (
+        time.time() -
+        result["created"]
+        > SCREENSHOT_TTL
+    ):
+
+        with screenshot_lock:
+
+            screenshot_results.pop(
+                command_id,
+                None
+            )
+
+
+        return jsonify({
+            "error": "Screenshot expired"
+        }), 410
+
+
+    # Laptop hasn't uploaded it yet
+    if result["status"] == "pending":
+
+        return jsonify({
+            "status": "pending"
+        }), 202
+
+
+    # Screenshot ready
+    return send_file(
+        io.BytesIO(
+            result["image"]
+        ),
+        mimetype="image/jpeg",
+        download_name="screenshot.jpg"
+    )
+
+
+# =========================================================
+# HEALTH CHECK
+# =========================================================
 
 @app.get("/health")
 def health():
 
     return jsonify({
-        "status":
-            "ok"
+        "status": "ok"
     })
 
 
-# ============================================================
-# RELAY STATUS
-# ============================================================
+# =========================================================
+# STATUS
+# =========================================================
 
 @app.get("/status")
 def status():
 
-    if not relay_authorized():
-
-        return jsonify({
-            "error":
-                "Unauthorized"
-        }), 401
-
-
-    with lock:
-
-        queue_size =
-            len(
-                pending_commands
-            )
-
-
-    with apps_lock:
-
-        app_count =
-            len(
-                available_apps
-            )
-
-
-    with screenshots_lock:
-
-        screenshot_count =
-            len(
-                screenshot_results
-            )
-
-
     return jsonify({
-
-        "relay":
-            "online",
-
-        "queued_commands":
-            queue_size,
-
-        "discovered_apps":
-            app_count,
-
-        "screenshots":
-            screenshot_count
-
+        "status": "online",
+        "apps": len(available_apps),
+        "pending_commands": len(
+            pending_commands
+        )
     })
 
 
-# ============================================================
+# =========================================================
+# CLEAN OLD SCREENSHOT RESULTS
+# =========================================================
+
+def screenshot_cleanup_loop():
+
+    while True:
+
+        try:
+
+            now = time.time()
+
+
+            with screenshot_lock:
+
+                expired = [
+
+                    command_id
+
+                    for command_id, result
+                    in screenshot_results.items()
+
+                    if (
+                        now -
+                        result["created"]
+                        > SCREENSHOT_TTL
+                    )
+
+                ]
+
+
+                for command_id in expired:
+
+                    screenshot_results.pop(
+                        command_id,
+                        None
+                    )
+
+
+        except Exception:
+
+            pass
+
+
+        time.sleep(60)
+
+
+# =========================================================
 # START SERVER
-# ============================================================
+# =========================================================
 
 if __name__ == "__main__":
 
@@ -2049,26 +1533,23 @@ if __name__ == "__main__":
         "Laptop Remote Relay starting..."
     )
 
+    threading.Thread(
+        target=screenshot_cleanup_loop,
+        daemon=True
+    ).start()
+
+
+    print(
+        "Laptop Remote Relay started."
+    )
 
     print(
         f"Listening on port {PORT}"
     )
 
 
-    threading.Thread(
-        target=
-            screenshot_cleanup_loop,
-
-        daemon=True
-    ).start()
-
-
     app.run(
-
         host="0.0.0.0",
-
         port=PORT,
-
         debug=False
-
     )
