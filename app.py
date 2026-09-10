@@ -983,6 +983,7 @@ const touchpad =
 
 let lastTouchX = 0;
 let lastTouchY = 0;
+let touchMoved = false;
 
 let movementDX = 0;
 let movementDY = 0;
@@ -1004,7 +1005,9 @@ touchpad.addEventListener(
 
         lastTouchY =
             touch.clientY;
-
+            
+        touchMoved = false;
+        
     },
     { passive: false }
 );
@@ -1034,10 +1037,13 @@ touchpad.addEventListener(
         lastTouchY =
             touch.clientY;
 
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+            touchMoved = true;
+        }    
+
 
         movementDX += dx;
         movementDY += dy;
-
 
         if (!movementTimer) {
 
@@ -1049,6 +1055,45 @@ touchpad.addEventListener(
 
         }
 
+    },
+    { passive: false }
+);
+
+touchpad.addEventListener(
+    "touchend",
+    async function(event) {
+
+        event.preventDefault();
+
+        if (!touchMoved) {
+
+            try {
+
+                await fetch(
+                    "/panel/command",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+
+                        body: JSON.stringify({
+                            command: "left_click"
+                        })
+                    }
+                );
+
+            } catch (error) {
+
+                console.log(
+                    "Left click error:",
+                    error
+                );
+
+            }
+        }
     },
     { passive: false }
 );
@@ -1342,6 +1387,7 @@ def panel_command():
         "open_app",
         "screenshot",
         "move_mouse",
+        "left_click",
     }
 
 
