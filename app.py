@@ -1070,42 +1070,55 @@ touchpad.addEventListener(
 touchpad.addEventListener(
     "touchend",
     async function(event) {
-
         event.preventDefault();
 
-        if (!touchMoved) {
-
+        // Two-finger tap = Right Click
+        if (event.changedTouches.length === 2) {
             try {
-
                 await fetch(
                     "/panel/command",
                     {
                         method: "POST",
-
                         headers: {
                             "Content-Type":
                                 "application/json"
                         },
+                        body: JSON.stringify({
+                            command: "right_click"
+                        })
+                    }
+                );
+            } catch (error) {
+                console.log("Right click error:", error);
+            }
 
+            touchMoved = false;
+            return;
+        }
+
+        // One-finger tap = Left Click
+        if (!touchMoved) {
+            try {
+                await fetch(
+                    "/panel/command",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
                         body: JSON.stringify({
                             command: "left_click"
                         })
                     }
                 );
-
             } catch (error) {
-
-                console.log(
-                    "Left click error:",
-                    error
-                );
-
+                console.log("Left click error:", error);
             }
         }
     },
     { passive: false }
 );
-
 
 async function sendMouseMovement() {
 
