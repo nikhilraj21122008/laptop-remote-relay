@@ -369,6 +369,21 @@ body {
     border-radius: 10px;
 }
 
+#touchpad {
+    height: 300px;
+    margin: 20px auto;
+    max-width: 600px;
+    background: #222;
+    border: 2px solid #444;
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #aaa;
+    touch-action: none;
+    user-select: none;
+}
+
 .count {
     color: #94a3b8;
     font-size: 14px;
@@ -472,6 +487,10 @@ body {
             >
                 📸 Screenshot
             </button>
+           
+            <div id="touchpad">
+                 🖱️ Touchpad
+            </div>
 
         </div>
 
@@ -956,6 +975,141 @@ async function takeScreenshot() {
 
 
 // =========================================================
+// TOUCHPAD MOUSE MOVEMENT
+// =========================================================
+
+const touchpad =
+    document.getElementById("touchpad");
+
+let lastTouchX = 0;
+let lastTouchY = 0;
+
+let movementDX = 0;
+let movementDY = 0;
+
+let movementTimer = null;
+
+
+touchpad.addEventListener(
+    "touchstart",
+    function(event) {
+
+        event.preventDefault();
+
+        const touch =
+            event.touches[0];
+
+        lastTouchX =
+            touch.clientX;
+
+        lastTouchY =
+            touch.clientY;
+
+    },
+    { passive: false }
+);
+
+
+touchpad.addEventListener(
+    "touchmove",
+    function(event) {
+
+        event.preventDefault();
+
+        const touch =
+            event.touches[0];
+
+        const dx =
+            touch.clientX -
+            lastTouchX;
+
+        const dy =
+            touch.clientY -
+            lastTouchY;
+
+
+        lastTouchX =
+            touch.clientX;
+
+        lastTouchY =
+            touch.clientY;
+
+
+        movementDX += dx;
+        movementDY += dy;
+
+
+        if (!movementTimer) {
+
+            movementTimer =
+                setTimeout(
+                    sendMouseMovement,
+                    50
+                );
+
+        }
+
+    },
+    { passive: false }
+);
+
+
+async function sendMouseMovement() {
+
+    movementTimer = null;
+
+
+    const dx =
+        movementDX;
+
+    const dy =
+        movementDY;
+
+
+    movementDX = 0;
+    movementDY = 0;
+
+
+    if (dx === 0 && dy === 0) {
+        return;
+    }
+
+
+    try {
+
+        await fetch(
+            "/panel/command",
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type":
+                        "application/json"
+                },
+
+                body: JSON.stringify({
+                    command: "move_mouse",
+                    dx: dx,
+                    dy: dy
+                })
+            }
+        );
+
+    }
+
+    catch (error) {
+
+        console.log(
+            "Mouse movement error:",
+            error
+        );
+
+    }
+
+}
+
+
+// =========================================================
 // LOAD APPS WHEN PAGE OPENS
 // =========================================================
 
@@ -1187,6 +1341,7 @@ def panel_command():
         "open_explorer",
         "open_app",
         "screenshot",
+        "move_mouse",
     }
 
 
@@ -1203,7 +1358,12 @@ def panel_command():
         "created": time.time()
     }
 
+    if command == "move_mouse":
 
+        command_item["dx"] = data.get("dx", 0)
+        command_item["dy"] = data.get("dy", 0)
+
+    
     # =====================================================
     # OPEN DISCOVERED APP
     # =====================================================
