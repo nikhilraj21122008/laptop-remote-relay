@@ -992,6 +992,7 @@ const touchpad =
 let lastTouchX = 0;
 let lastTouchY = 0;
 let touchMoved = false;
+let rightClickGesture = false;
 
 let movementDX = 0;
 let movementDY = 0;
@@ -1013,9 +1014,13 @@ touchpad.addEventListener(
 
         lastTouchY =
             touch.clientY;
-            
+
         touchMoved = false;
-        
+
+        if (event.touches.length === 2) {
+            rightClickGesture = true;
+        }
+
     },
     { passive: false }
 );
@@ -1070,34 +1075,46 @@ touchpad.addEventListener(
 touchpad.addEventListener(
     "touchend",
     async function(event) {
+
         event.preventDefault();
 
         // Two-finger tap = Right Click
-        if (event.changedTouches.length === 2) {
-            try {
-                await fetch(
-                    "/panel/command",
-                    {
-                        method: "POST",
-                        headers: {
-                            "Content-Type":
-                                "application/json"
-                        },
-                        body: JSON.stringify({
-                            command: "right_click"
-                        })
-                    }
-                );
-            } catch (error) {
-                console.log("Right click error:", error);
+        if (rightClickGesture) {
+
+            // Wait until both fingers are released
+            if (event.touches.length === 0) {
+
+                try {
+                    await fetch(
+                        "/panel/command",
+                        {
+                            method: "POST",
+                            headers: {
+                                "Content-Type":
+                                    "application/json"
+                            },
+                            body: JSON.stringify({
+                                command: "right_click"
+                            })
+                        }
+                    );
+                } catch (error) {
+                    console.log(
+                        "Right click error:",
+                        error
+                    );
+                }
+
+                rightClickGesture = false;
+                touchMoved = false;
             }
 
-            touchMoved = false;
             return;
         }
 
         // One-finger tap = Left Click
-        if (!touchMoved) {
+        if (!touchMoved && event.touches.length === 0) {
+
             try {
                 await fetch(
                     "/panel/command",
@@ -1113,9 +1130,13 @@ touchpad.addEventListener(
                     }
                 );
             } catch (error) {
-                console.log("Left click error:", error);
+                console.log(
+                    "Left click error:",
+                    error
+                );
             }
         }
+
     },
     { passive: false }
 );
