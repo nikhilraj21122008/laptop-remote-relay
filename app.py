@@ -496,6 +496,10 @@ body {
                     👆 Test Left Click
             </button>
 
+            <button class="quick-button" onclick="sendCommand('right_click')">
+                    👉 Test Right Click
+            </button>
+
         </div>
 
         <div id="result" class="result">
@@ -1392,6 +1396,7 @@ def panel_command():
         "screenshot",
         "move_mouse",
         "left_click",
+        "right_click",
     }
 
 
