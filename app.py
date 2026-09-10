@@ -492,6 +492,10 @@ body {
                  🖱️ Touchpad
             </div>
 
+            <button class="quick-button" onclick="sendCommand('left_click')">
+                    👆 Test Left Click
+            </button>
+
         </div>
 
         <div id="result" class="result">
