@@ -1016,6 +1016,8 @@ touchpad.addEventListener(
         // Start normal one-finger movement
         if (event.touches.length === 1) {
 
+            rightClickGesture = false;
+
             const touch =
                 event.touches[0];
 
@@ -1054,9 +1056,6 @@ touchpad.addEventListener(
             touch.clientY -
             lastTouchY;
 
-        const smoothDX = dx * 1.5;
-        const smoothDY = dy * 1.5;
-
 
         lastTouchX =
             touch.clientX;
@@ -1069,8 +1068,8 @@ touchpad.addEventListener(
         }    
 
 
-        movementDX += smoothDx;
-        movementDY += smoothDy;
+        movementDX += dx;
+        movementDY += dy;
 
         if (!movementTimer) {
 
