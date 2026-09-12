@@ -1006,19 +1006,26 @@ touchpad.addEventListener(
 
         event.preventDefault();
 
-        const touch =
-            event.touches[0];
-
-        lastTouchX =
-            touch.clientX;
-
-        lastTouchY =
-            touch.clientY;
-
-        touchMoved = false;
-
+        // Two fingers detected
         if (event.touches.length === 2) {
             rightClickGesture = true;
+            touchMoved = false;
+            return;
+        }
+
+        // Start normal one-finger movement
+        if (event.touches.length === 1) {
+
+            const touch =
+                event.touches[0];
+
+            lastTouchX =
+                touch.clientX;
+
+            lastTouchY =
+                touch.clientY;
+
+            touchMoved = false;
         }
 
     },
@@ -1031,6 +1038,10 @@ touchpad.addEventListener(
     function(event) {
 
         event.preventDefault();
+
+        if (rightClickGesture) {
+            return;
+        }
 
         const touch =
             event.touches[0];
