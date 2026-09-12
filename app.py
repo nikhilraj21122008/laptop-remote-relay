@@ -1076,7 +1076,7 @@ touchpad.addEventListener(
             movementTimer =
                 setTimeout(
                     sendMouseMovement,
-                    10
+                    50
                 );
 
         }
