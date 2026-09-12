@@ -1054,6 +1054,9 @@ touchpad.addEventListener(
             touch.clientY -
             lastTouchY;
 
+        const smoothDX = dx * 1.5;
+        const smoothDY = dy * 1.5;
+
 
         lastTouchX =
             touch.clientX;
@@ -1066,15 +1069,15 @@ touchpad.addEventListener(
         }    
 
 
-        movementDX += dx;
-        movementDY += dy;
+        movementDX += smoothDx;
+        movementDY += smoothDy;
 
         if (!movementTimer) {
 
             movementTimer =
                 setTimeout(
                     sendMouseMovement,
-                    25
+                    10
                 );
 
         }
